@@ -1,0 +1,19 @@
+# Render Blueprint — deploy the BeatDrop media engine as a free web service.
+# In the Render dashboard: New + → Blueprint → select the GitHub repo that
+# contains this file. Then set BEATDROP_API_TOKEN in the Environment tab.
+services:
+  - type: web
+    name: beatdrop-engine
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # Gunicorn serves the Flask app on the $PORT Render assigns. One worker
+    # with threads is plenty for personal use and fits the 512 MB free tier.
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      # Shared secret: create it in the dashboard (Environment → Add Secret).
+      # The phone sends the same value via X-API-Key (app Settings field).
+      - key: BEATDROP_API_TOKEN
+        sync: false
