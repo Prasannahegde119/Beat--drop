@@ -226,3 +226,69 @@ def test_search_surfaces_source_failure_as_clean_error(client):
     assert resp.status_code == 502
     # User-facing message, never a stack trace.
     assert "Traceback" not in resp.get_data(as_text=True)
+
+
+def test_info_bot_challenge_returns_actionable_422(client):
+    class BotYDL(FakeYDL):
+        def extract_info(self, url, download=False):
+            if url.startswith("ytsearch"):
+                return super().extract_info(url, download)
+            raise DownloadError(
+                "Sign in to confirm you're not a bot. "
+                "Use --cookies-from-browser or --cookies for the authentication."
+            )
+
+    with mock.patch.object(backend, "YoutubeDL", BotYDL):
+        resp = client.get("/api/info?u=https://www.youtube.com/watch?v=blocked")
+    assert resp.status_code == 422
+    body = resp.get_json()["error"]
+    assert "bot" in body.lower()
+    assert "YOUTUBE_COOKIES" in body
+    assert "Traceback" not in resp.get_data(as_text=True)
+
+
+def test_search_bot_challenge_returns_422(client):
+    class BotSearchYDL(FakeYDL):
+        def extract_info(self, url, download=False):
+            if url.startswith("ytsearch"):
+                raise DownloadError(
+                    "Sign in to confirm you're not a bot. Use --cookies"
+                )
+            return super().extract_info(url, download)
+
+    with mock.patch.object(backend, "YoutubeDL", BotSearchYDL):
+        resp = client.get("/api/search?q=tabahi")
+    assert resp.status_code == 422
+    assert "bot" in resp.get_json()["error"].lower()
+
+
+def test_cookiefile_wired_when_configured(client, monkeypatch, tmp_path):
+    cookie = tmp_path / "cookies.txt"
+    cookie.write_text("# Netscape HTTP Cookie File\n")
+    captured: dict = {}
+
+    class CaptureYDL(FakeYDL):
+        def __init__(self, opts):
+            super().__init__(opts)
+            captured["opts"] = opts
+
+    monkeypatch.setattr(backend, "COOKIE_FILE", str(cookie))
+    with mock.patch.object(backend, "YoutubeDL", CaptureYDL):
+        resp = client.get("/api/search?q=jazz")
+    assert resp.status_code == 200
+    assert captured["opts"].get("cookiefile") == str(cookie)
+
+
+def test_no_cookiefile_by_default(client):
+    captured: dict = {}
+
+    class CaptureYDL(FakeYDL):
+        def __init__(self, opts):
+            super().__init__(opts)
+            captured["opts"] = opts
+
+    with mock.patch.object(backend, "COOKIE_FILE", None), \
+            mock.patch.object(backend, "YoutubeDL", CaptureYDL):
+        resp = client.get("/api/search?q=jazz")
+    assert resp.status_code == 200
+    assert "cookiefile" not in captured["opts"]

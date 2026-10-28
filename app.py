@@ -45,6 +45,51 @@ def _error(message: str, status: int = 400):
     return jsonify({"error": message}), status
 
 
+BOT_MESSAGE = (
+    "YouTube challenged the engine with a 'confirm you're not a bot' check and "
+    "refused this video. This commonly happens to cloud-hosted server IPs and is "
+    "not a connection failure. Options: set YOUTUBE_COOKIES on the server (see "
+    "RENDER_DEPLOY.md), retry later, try another platform, or paste a direct "
+    "media link, which always works on-device."
+)
+
+
+def _is_bot_challenge(exc: Exception) -> bool:
+    """yt-dlp raises this when YouTube demands bot verification/cookies."""
+    msg = str(exc).lower()
+    return (
+        "not a bot" in msg
+        or "sign in to confirm" in msg
+        or ("cookies" in msg and "bot" in msg)
+    )
+
+
+def _prepare_cookiefile() -> str | None:
+    """Optional cookies supplied through YOUTUBE_COOKIES (Netscape format).
+
+    Only used to satisfy bot verification for otherwise public media. It does
+    NOT bypass private/age/DRM restrictions — those stay refused in the
+    handlers. Render's disk is ephemeral, so the file is recreated at boot
+    from the environment variable; cookies are never committed to git.
+    """
+    raw = os.environ.get("YOUTUBE_COOKIES", "").strip()
+    if not raw:
+        return None
+    path = "/tmp/beatdrop_cookies.txt"
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(raw if raw.endswith("\n") else raw + "\n")
+        os.chmod(path, 0o600)
+        log.info("cookiefile configured from YOUTUBE_COOKIES")
+        return path
+    except OSError:
+        log.exception("could not write cookiefile; continuing without cookies")
+        return None
+
+
+COOKIE_FILE = _prepare_cookiefile()
+
+
 def _require_auth():
     """Optional shared-secret guard for public hosting (e.g. Render).
 
@@ -66,14 +111,17 @@ def _require_auth():
 
 
 def _base_ydl_opts() -> dict:
-    return {
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "socket_timeout": 20,
         "retries": 2,
-        # BeatDrop never bypasses access controls: cookies/auth are not wired in.
     }
+    # User-supplied cookies only satisfy bot checks for public media.
+    if COOKIE_FILE:
+        opts["cookiefile"] = COOKIE_FILE
+    return opts
 
 
 def _media_type_for_ext(ext: str) -> str:
@@ -151,6 +199,9 @@ def search():
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"ytsearch{fetch}:{query}", download=False)
     except (DownloadError, ExtractorError) as exc:
+        if _is_bot_challenge(exc):
+            log.warning("search blocked by bot challenge")
+            return _error(BOT_MESSAGE, 422)
         log.warning("search failed: %s", type(exc).__name__)
         return _error("The media source could not be searched. Try again later.", 502)
     except Exception:  # defensive: never leak a trace to the app
@@ -244,6 +295,9 @@ def info():
         with YoutubeDL(opts) as ydl:
             full = ydl.extract_info(source_url, download=False)
     except (DownloadError, ExtractorError) as exc:
+        if _is_bot_challenge(exc):
+            log.warning("info blocked by bot challenge")
+            return _error(BOT_MESSAGE, 422)
         msg = str(exc).lower()
         if "private" in msg or "login" in msg or "403" in msg:
             return _error("Access to this media is restricted. BeatDrop does not bypass access controls.", 403)
@@ -303,7 +357,10 @@ def stream():
     try:
         with YoutubeDL({**_base_ydl_opts(), "format": format_id}) as ydl:
             info = ydl.extract_info(source_url, download=False)
-    except (DownloadError, ExtractorError):
+    except (DownloadError, ExtractorError) as exc:
+        if _is_bot_challenge(exc):
+            log.warning("stream blocked by bot challenge")
+            return _error(BOT_MESSAGE, 422)
         log.warning("stream resolution failed for format %s", format_id)
         return _error("Could not resolve the stream URL.", 502)
     except Exception:

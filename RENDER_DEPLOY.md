@@ -87,6 +87,30 @@ the repo → Runtime Python → Build command `pip install -r requirements.txt`
   messages, never stack traces). The free plan costs nothing; usage limits
   are generous for personal use.
 
+## YouTube "confirm you're not a bot" errors (cloud IP checks)
+
+YouTube sometimes challenges datacenter IPs (including Render's). Search can
+still work while opening a video fails; the app then shows an explicit
+"bot check" message (HTTP 422) instead of a generic connection error. Three
+remedies, in order of effort:
+
+1. **Redeploy with a fresh yt-dlp** — extractor fixes ship constantly
+   (`requirements.txt` already pins a recent floor). Render dashboard → your
+   service → Manual Deploy → **Clear build cache & deploy**.
+2. **Provide cookies via the `YOUTUBE_COOKIES` variable** (the reliable fix):
+   - On your laptop browser, log into a **secondary/throwaway Google account**
+     (never your main account).
+   - Add a cookies export extension (e.g. "Get cookies.txt LOCALLY"), open
+     `youtube.com`, and export in Netscape `cookies.txt` format.
+   - Render → service → **Environment → Add Environment Variable**:
+     key `YOUTUBE_COOKIES`, value = the **entire text** of cookies.txt
+     (multiline values are accepted). Save — Render redeploys automatically.
+   - The engine writes the value to a 0600 temp file at boot; Render's disk is
+     ephemeral and nothing is committed to git. Delete the variable to revoke.
+   - Cookies expire after some weeks; if bot messages return, re-export.
+3. **Use other sources or direct links** — non-YouTube platforms and pasted
+   direct media URLs are unaffected and keep working.
+
 ## Security recap
 
 Only http(s) URLs are accepted; login/private/DRM content is refused, never
